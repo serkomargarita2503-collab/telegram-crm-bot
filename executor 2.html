@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Мои задания</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 0; padding: 16px; background: var(--tg-theme-bg-color, #f7f9fc); color: var(--tg-theme-text-color, #000); }
+      h1 { font-size: 20px; border-bottom: 2px solid #3498db; padding-bottom: 8px; }
+      .stats-grid { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+      .stat-item { background: #2c3e50; color: white; padding: 10px 14px; border-radius: 8px; flex: 1; min-width: 90px; text-align: center; }
+      .stat-number { font-size: 1.3em; font-weight: bold; }
+      .stat-label { font-size: 11px; opacity: 0.85; }
+      .progress-labels { display: flex; justify-content: space-between; font-size: 12px; color: #7f8c8d; margin-bottom: 4px; }
+      .progress-bar-bg { background: #ecf0f1; border-radius: 8px; height: 8px; overflow: hidden; margin-bottom: 16px; }
+      .progress-bar-fill { background: #27ae60; height: 100%; transition: width 0.3s; }
+      .btn { padding: 10px 16px; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; margin: 4px 4px 4px 0; }
+      .btn-success { background: #27ae60; color: white; }
+      .btn-danger { background: #e74c3c; color: white; }
+      .btn-primary { background: #3498db; color: white; }
+      .btn-warning { background: #f39c12; color: white; }
+      .card { background: white; border-radius: 10px; padding: 12px; margin-bottom: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+      .phone { font-weight: bold; font-size: 15px; }
+      .status-free { border-left: 4px solid #bdc3c7; }
+      .status-sent { border-left: 4px solid #27ae60; }
+      .status-interested { border-left: 4px solid #e74c3c; }
+      .status-taken { border-left: 4px solid #f39c12; }
+      .status-label { font-size: 12px; color: #7f8c8d; margin: 4px 0; }
+      .links a { text-decoration: none; margin-right: 12px; font-size: 13px; }
+      .comment-input { width: 100%; box-sizing: border-box; padding: 6px; border: 1px solid #ccc; border-radius: 4px; margin: 6px 0; font-size: 13px; }
+    </style>
+  </head>
+  <body>
+    <h1>📋 Мои задания</h1>
+    <div class="stats-grid" id="statsGrid"></div>
+    <div id="progressWrap" style="display:none;">
+      <div class="progress-labels"><span>Прогресс по пачке</span><span id="progressText">0 / 0</span></div>
+      <div class="progress-bar-bg"><div class="progress-bar-fill" id="progressFill" style="width:0%;"></div></div>
+    </div>
+    <div>
+      <button class="btn btn-success" onclick="takeBatch()">➕ Взять пачку</button>
+      <button class="btn btn-warning" onclick="loadBatch()">🔄 Обновить</button>
+    </div>
+    <div id="list" style="margin-top:12px;"></div>
+
+    <script>
+      const tg = window.Telegram.WebApp;
+      tg.ready();
+      tg.expand();
+      const initData = tg.initData;
+
+      let batch = [];
+
+      async function api(path, options = {}) {
+        const res = await fetch(path, {
+          ...options,
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Telegram-Init-Data': initData,
+            ...(options.headers || {})
+          }
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ error: 'Ошибка сервера' }));
+          throw new Error(err.error || 'Ошибка сервера');
+        }
+        return res.json();
+      }
+
+      function renderStats() {
+        const total = batch.length;
+        const sent = batch.filter(i => i.status === 'sent' || i.status === 'interested').length;
+        const interested = batch.filter(i => i.status === 'interested').length;
+        const remaining = total - sent;
+
+        document.getElementById('statsGrid').innerHTML = `
+          <div class="stat-item"><div class="stat-number">${total}</div><div class="stat-label">В пачке</div></div>
+          <div class="stat-item"><div class="stat-number">${sent}</div><div class="stat-label">Отправлено</div></div>
+          <div class="stat-item"><div class="stat-number">${interested}</div><div class="stat-label">Заинтересовались</div></div>
+          <div class="stat-item"><div class="stat-number">${remaining}</div><div class="stat-label">Осталось</div></div>
+        `;
+
+        const wrap = document.getElementById('progressWrap');
+        if (total > 0) {
+          wrap.style.display = 'block';
+          const pct = Math.round((sent / total) * 100);
+          document.getElementById('progressFill').style.width = pct + '%';
+          document.getElementById('progressText').innerText = `${sent} / ${total}`;
+        } else {
+          wrap.style.display = 'none';
+        }
+      }
+
+      function renderList() {
+        const list = document.getElementById('list');
+        if (!batch.length) {
+          list.innerHTML = '<p>Нет активных номеров. Нажмите «Взять пачку».</p>';
+          renderStats();
+          return;
+        }
+        list.innerHTML = batch.map(item => {
+          let cls = 'status-taken', label = '📤 Выдано';
+          if (item.status === 'sent') { cls = 'status-sent'; label = '✅ Отправлено'; }
+          if (item.status === 'interested') { cls = 'status-interested'; label = '⭐ Заинтересован'; }
+          const tgLink = `https://t.me/+${item.phone}`;
+          const waLink = `https://wa.me/${item.phone}`;
+          return `
+            <div class="card ${cls}">
+              <div class="phone">${item.phone}</div>
+              <div class="status-label">${label}</div>
+              <div class="links">
+                <a href="${tgLink}" target="_blank">📱 Telegram</a>
+                <a href="${waLink}" target="_blank">💬 WhatsApp</a>
+              </div>
+              <input type="text" class="comment-input" id="c_${item.id}" placeholder="Комментарий" value="${item.comment || ''}">
+              <button class="btn btn-primary" onclick="markSent(${item.id})" ${item.status !== 'taken' ? 'disabled' : ''}>📨 Отправил</button>
+              <button class="btn btn-danger" onclick="markInterested(${item.id})" ${item.status === 'interested' ? 'disabled' : ''}>⭐ Заинтересован</button>
+            </div>
+          `;
+        }).join('');
+        renderStats();
+      }
+
+      async function loadBatch() {
+        try {
+          batch = await api('/api/batch');
+          renderList();
+        } catch (e) { tg.showAlert(e.message); }
+      }
+
+      async function takeBatch() {
+        try {
+          const result = await api('/api/take-batch', { method: 'POST' });
+          tg.showAlert(result.message);
+          loadBatch();
+        } catch (e) { tg.showAlert(e.message); }
+      }
+
+      async function markSent(id) {
+        try {
+          await api('/api/mark-sent', { method: 'POST', body: JSON.stringify({ id }) });
+          loadBatch();
+        } catch (e) { tg.showAlert(e.message); }
+      }
+
+      async function markInterested(id) {
+        const comment = document.getElementById(`c_${id}`)?.value || '';
+        try {
+          await api('/api/mark-interested', { method: 'POST', body: JSON.stringify({ id, comment }) });
+          loadBatch();
+        } catch (e) { tg.showAlert(e.message); }
+      }
+
+      loadBatch();
+    </script>
+  </body>
+</html>

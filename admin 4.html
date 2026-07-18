@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Дашборд администратора</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+    <style>
+      body { font-family: Arial; margin: 0; padding: 16px; background: var(--tg-theme-bg-color, #f4f6f8); color: var(--tg-theme-text-color, #000); }
+      h1 { font-size: 20px; }
+      .card { background: white; border-radius: 10px; padding: 14px; margin: 12px 0; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+      .stats-grid { display: flex; flex-wrap: wrap; gap: 10px; }
+      .stat-item { background: #2c3e50; color: white; padding: 10px 16px; border-radius: 8px; flex: 1; min-width: 110px; text-align: center; }
+      .stat-number { font-size: 1.4em; font-weight: bold; }
+      table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; }
+      th { background: #34495e; color: white; padding: 8px; }
+      td { padding: 8px; border-bottom: 1px solid #ddd; }
+      .refresh-btn { padding: 8px 16px; background: #3498db; color: white; border: none; border-radius: 5px; cursor: pointer; }
+      .chart-box { position: relative; height: 240px; margin-top: 10px; }
+      textarea { width: 100%; box-sizing: border-box; padding: 8px; border: 1px solid #ccc; border-radius: 5px; font-family: monospace; }
+      .import-status { font-size: 13px; color: #7f8c8d; }
+    </style>
+  </head>
+  <body>
+    <h1>📊 Дашборд администратора</h1>
+    <button class="refresh-btn" onclick="loadStats()">🔄 Обновить</button>
+
+    <div class="card">
+      <h3>Загрузить номера в базу</h3>
+      <p style="font-size:13px;color:#7f8c8d;">Вставьте номера, каждый с новой строки, через запятую или пробел.</p>
+      <textarea id="importText" rows="5" placeholder="79123456789&#10;79123456790"></textarea>
+      <div style="margin-top:8px;">
+        <input type="file" id="importFile" accept=".csv,.txt" onchange="handleFile(event)">
+        <button class="refresh-btn" style="background:#27ae60;" onclick="doImport()">⬆️ Загрузить</button>
+      </div>
+      <div class="import-status" id="importStatus"></div>
+    </div>
+
+    <div id="statsContent"><p>Загрузка...</p></div>
+
+    <script>
+      const tg = window.Telegram.WebApp;
+      tg.ready();
+      tg.expand();
+      const initData = tg.initData;
+
+      async function api(path, options = {}) {
+        const res = await fetch(path, {
+          ...options,
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Telegram-Init-Data': initData,
+            ...(options.headers || {})
+          }
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ error: 'Ошибка сервера' }));
+          throw new Error(err.error || 'Ошибка сервера');
+        }
+        return res.json();
+      }
+
+      function handleFile(event) {
+        const file = event.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          const ta = document.getElementById('importText');
+          ta.value = ta.value.trim() ? ta.value.trim() + '\n' + e.target.result : e.target.result;
+        };
+        reader.readAsText(file);
+      }
+
+      async function doImport() {
+        const raw = document.getElementById('importText').value;
+        const numbers = raw.split(/[\n,;\s]+/).map(s => s.trim()).filter(Boolean);
+        if (!numbers.length) { tg.showAlert('Не найдено ни одного номера.'); return; }
+        document.getElementById('importStatus').innerText = 'Загрузка...';
+        try {
+          const result = await api('/api/admin/import', { method: 'POST', body: JSON.stringify({ numbers }) });
+          document.getElementById('importStatus').innerText =
+            `Добавлено: ${result.added}, дублей: ${result.duplicates}, некорректных: ${result.invalid}`;
+          document.getElementById('importText').value = '';
+          document.getElementById('importFile').value = '';
+          loadStats();
+        } catch (e) {
+          document.getElementById('importStatus').innerText = 'Ошибка: ' + e.message;
+        }
+      }
+
+      let statusChart = null, execChart = null;
+
+      async function loadStats() {
+        try {
+          const data = await api('/api/admin/stats');
+          renderDashboard(data);
+        } catch (e) {
+          document.getElementById('statsContent').innerHTML = `<p style="color:red;">${e.message}</p>`;
+        }
+      }
+
+      function renderDashboard(data) {
+        const taken = data.total - data.free - data.sent - data.interested;
+        let html = `<div class="stats-grid">
+          <div class="stat-item"><div class="stat-number">${data.total}</div>Всего</div>
+          <div class="stat-item"><div class="stat-number">${data.sent}</div>Отправлено</div>
+          <div class="stat-item"><div class="stat-number">${data.interested}</div>Заинтересовались</div>
+          <div class="stat-item"><div class="stat-number">${data.free}</div>Свободно</div>
+        </div>`;
+
+        html += `<div class="card"><h3>Распределение статусов</h3><div class="chart-box"><canvas id="statusChart" role="img" aria-label="Распределение статусов номеров"></canvas></div></div>`;
+
+        const names = Object.keys(data.stats);
+        const totals = names.map(n => data.stats[n].total);
+        const sents = names.map(n => data.stats[n].sent);
+        const interesteds = names.map(n => data.stats[n].interested);
+
+        html += `<div class="card"><h3>Исполнители</h3>
+          <div class="chart-box" style="height:${Math.max(220, names.length * 40 + 60)}px;"><canvas id="execChart" role="img" aria-label="Статистика по исполнителям"></canvas></div>
+          <table><tr><th>Исполнитель</th><th>Выдано</th><th>Отправлено</th><th>Интерес</th></tr>
+          ${names.map(n => `<tr><td>${n}</td><td>${data.stats[n].total}</td><td>${data.stats[n].sent}</td><td>${data.stats[n].interested}</td></tr>`).join('')}
+          </table></div>`;
+
+        document.getElementById('statsContent').innerHTML = html;
+
+        if (statusChart) statusChart.destroy();
+        statusChart = new Chart(document.getElementById('statusChart'), {
+          type: 'doughnut',
+          data: { labels: ['Отправлено','Заинтересовались','Выдано','Свободно'],
+            datasets: [{ data: [data.sent, data.interested, taken, data.free], backgroundColor: ['#2a78d6','#eb6834','#1baf7a','#c3c2b7'] }] },
+          options: { responsive: true, maintainAspectRatio: false }
+        });
+
+        if (execChart) execChart.destroy();
+        execChart = new Chart(document.getElementById('execChart'), {
+          type: 'bar',
+          data: { labels: names, datasets: [
+            { label: 'Выдано', data: totals, backgroundColor: '#c3c2b7' },
+            { label: 'Отправлено', data: sents, backgroundColor: '#2a78d6' },
+            { label: 'Заинтересовались', data: interesteds, backgroundColor: '#eb6834' }
+          ]},
+          options: { responsive: true, maintainAspectRatio: false, indexAxis: names.length > 6 ? 'y' : 'x' }
+        });
+      }
+
+      loadStats();
+    </script>
+  </body>
+</html>
